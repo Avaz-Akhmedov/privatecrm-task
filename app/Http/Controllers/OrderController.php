@@ -27,7 +27,6 @@ class OrderController extends Controller
     }
 
     public function store(StoreOrderRequest $request): JsonResponse
-
     {
         DB::transaction(function () use ($request) {
 
@@ -38,6 +37,7 @@ class OrderController extends Controller
             $rations = [];
             $scheduleType = $order->schedule_type;
             $rationCount = 1;
+            $shouldCreateRation = false;
 
 
             foreach ($request->validated('date_ranges') as $dateRange) {
@@ -45,39 +45,34 @@ class OrderController extends Controller
                 $to = Carbon::parse($dateRange['to']);
 
                 while ($from <= $to) {
-                    $shouldCreateRation = match ($scheduleType) {
-                        'EVERY_DAY' => true,
-                        'EVERY_OTHER_DAY' => $from->dayOfYear % 2 === 1,
-                        'EVERY_OTHER_DAY_TWICE' => function ($from, $to, &$rationCount) {
-                            $rationCount = $from->addDays(1)->lte($to) ? 2 : 1;
-                            return $from->dayOfYear % 2 === 1 || $from->eq($to);
-                        },
-                        'default' => false,
-                    };
+
+                    switch ($scheduleType) {
+                        case 'EVERY_DAY':
+                            $shouldCreateRation = true;
+                            break;
+                        case 'EVERY_OTHER_DAY':
+                            $shouldCreateRation = $from->dayOfYear % 2 === 1;
+                            break;
+                        case 'EVERY_OTHER_DAY_TWICE':
+                            $shouldCreateRation = $from->dayOfYear % 2 === 1 || $from->eq($to);
+                            $rationCount = $shouldCreateRation && !$from->eq($to) ? 2 : 1;
+                            break;
+                    }
+
                     if ($shouldCreateRation) {
                         $deliveryDate = $from->copy();
-
                         $cookingDate = $tariff->cooking_day_before ? $deliveryDate->copy()->subDay() : $deliveryDate->copy();
 
-
-                        for ($i = 0; $i < ($rationCount); $i++) {
-                            if ($deliveryDate->gt($to)) {
-                                break;
-                            }
+                        for ($i = 0; $i < $rationCount; $i++) {
+                            $rations[] = $this->createRation($order->id, $cookingDate, $deliveryDate);
                         }
-
-
-                        $rations[] = [
-                            'order_id' => $order->id,
-                            'cooking_date' => $cookingDate->toDateTimeString(),
-                            'delivery_date' => $deliveryDate->toDateTimeString(),
-                            'created_at' => now(),
-                            'updated_at' => now(),
-                        ];
                     }
+
                     $from->addDay();
                 }
+
             }
+
 
             Ration::query()->insert($rations);
             $deliveryDates = collect($rations)->pluck('delivery_date');
@@ -95,4 +90,14 @@ class OrderController extends Controller
     }
 
 
+    private function createRation(int $orderId, Carbon $cookingDate, Carbon $deliveryDate): array
+    {
+        return [
+            'order_id' => $orderId,
+            'cooking_date' => $cookingDate->toDateTimeString(),
+            'delivery_date' => $deliveryDate->toDateTimeString(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+    }
 }
